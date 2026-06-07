@@ -78,9 +78,15 @@ Claude(클로드)가 **내 삼성 노트를 직접 읽을 수 있게** 해주는
 python server.py --http
 # 3. 터널 켜기
 tailscale funnel --bg 8788
-# 4. claude.ai → Settings → Connectors → Add custom connector
-#    URL: https://<내 funnel 주소>/<http_secret.txt 안의 비밀값>/mcp
+# 4. 만들어진 주소를 Claude에 등록 (아래 참고)
 ```
+
+**주소 등록하는 곳** (PC가 아니라 **claude.ai 사이트**에 등록합니다):
+
+1. 크롬에서 [claude.ai](https://claude.ai) 접속 → 왼쪽 아래 내 이름 → **Settings(설정)**
+2. **Connectors(커넥터)** → **Add custom connector(커스텀 커넥터 추가)**
+3. URL 칸에 붙여넣기: `https://<내 funnel 주소>/<http_secret.txt 안의 비밀값>/mcp`
+4. **Add** 클릭 → 끝. claude.ai 웹과 폰/태블릿 Claude 앱에 자동으로 나타납니다.
 
 ⚠️ 이렇게 하면 비밀 URL을 아는 사람은 누구나 내 노트를 읽을 수 있습니다. URL을 절대 공유하지 마세요. 잘 모르겠으면 기본(로컬) 설치만 쓰는 것을 권합니다.
 
