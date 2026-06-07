@@ -49,8 +49,25 @@ def _local_state_dir() -> Path:
     return matches[0] / "LocalState"
 
 
-_SNAPSHOT = Path(tempfile.gettempdir()) / "samsung_notes_mcp_snapshot.sqlite"
+# Per-process snapshot: Claude Desktop, Claude Code and the HTTP server may
+# run this module simultaneously — sharing one snapshot file would let one
+# process overwrite it mid-read in another.
+_SNAPSHOT = Path(tempfile.gettempdir()) / f"samsung_notes_mcp_snapshot_{os.getpid()}.sqlite"
 _snapshot_stamp: float = -1.0
+
+
+def _cleanup_stale_snapshots() -> None:
+    """Delete snapshots left by dead processes (live ones are file-locked
+    on Windows and simply refuse deletion)."""
+    for p in Path(tempfile.gettempdir()).glob("samsung_notes_mcp_snapshot_*.sqlite*"):
+        if not p.name.startswith(_SNAPSHOT.name):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+_cleanup_stale_snapshots()
 
 
 def _connect() -> sqlite3.Connection:
@@ -97,6 +114,11 @@ def _clean(s: str | None) -> str:
     return _INVISIBLE.sub("", s or "").strip()
 
 
+def _like(s: str) -> str:
+    """Escape SQL LIKE wildcards in user input (use with ESCAPE '\\')."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _date(ms: int | None) -> str:
     if not ms:
         return ""
@@ -129,8 +151,9 @@ def _resolve_note(con: sqlite3.Connection, note_id: str) -> sqlite3.Row:
     if row:
         return row
     rows = con.execute(
-        "select * from NoteDB where DeletedStatus=0 and Title like ? order by LastModifiedAt desc",
-        (f"%{note_id}%",),
+        "select * from NoteDB where DeletedStatus=0 and Title like ? escape '\\' "
+        "order by LastModifiedAt desc",
+        (f"%{_like(note_id)}%",),
     ).fetchall()
     if len(rows) == 1:
         return rows[0]
@@ -189,8 +212,11 @@ def _scaled_jpeg(path: Path, max_width: int) -> Image:
     return Image(data=buf.getvalue(), format="jpeg")
 
 
+_TEXT_LIMIT = 20_000  # chars per field; imported-PDF text can reach megabytes
+
+
 def _texts(row: sqlite3.Row) -> dict:
-    """All readable text a note carries, by source."""
+    """All readable text a note carries, by source (truncated if huge)."""
     out = {}
     for key, col in [
         ("typed_text", "StrippedContent"),
@@ -200,6 +226,8 @@ def _texts(row: sqlite3.Row) -> dict:
     ]:
         v = (row[col] or "").strip()
         if v.strip("/ \n\r\t"):
+            if len(v) > _TEXT_LIMIT:
+                v = v[:_TEXT_LIMIT] + f"\n…[truncated — {len(v):,} chars total]"
             out[key] = v
     return out
 
@@ -330,14 +358,14 @@ def samsung_notes_search(query: str, top: int = 20) -> str:
     con = _connect()
     try:
         names = _folder_names(con)
-        like = f"%{query}%"
+        like = f"%{_like(query)}%"
         rows = con.execute(
             """select UUID, Title, CategoryUUID, LastModifiedAt,
                       (coalesce(StrippedContent,'') || ' ' || coalesce(PDFTextContents,'')
                        || ' ' || coalesce(InsertedTextboxContents,'')) as alltext
                from NoteDB
-               where DeletedStatus=0 and (Title like ? or StrippedContent like ?
-                     or PDFTextContents like ? or InsertedTextboxContents like ?)
+               where DeletedStatus=0 and (Title like ? escape '\\' or StrippedContent like ? escape '\\'
+                     or PDFTextContents like ? escape '\\' or InsertedTextboxContents like ? escape '\\')
                order by LastModifiedAt desc limit ?""",
             (like, like, like, like, top),
         ).fetchall()
@@ -478,10 +506,13 @@ if __name__ == "__main__":
         from mcp.server.transport_security import TransportSecuritySettings
 
         allowed = ["127.0.0.1:*", "localhost:*"]
+        tailscale = r"C:\Program Files\Tailscale\tailscale.exe"
+        if not Path(tailscale).exists():
+            tailscale = shutil.which("tailscale") or tailscale
         try:
             status = json.loads(
                 subprocess.run(
-                    [r"C:\Program Files\Tailscale\tailscale.exe", "status", "--json"],
+                    [tailscale, "status", "--json"],
                     capture_output=True, timeout=15,
                     # explicit utf-8: Korean Windows would otherwise decode as cp949
                     encoding="utf-8", errors="replace",

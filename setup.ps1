@@ -95,10 +95,17 @@ p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
 
 # ── 6. Claude Code 등록 (있으면) ─────────────────────────────
 Step "Claude Code에 등록"
-if (Get-Command claude -ErrorAction SilentlyContinue) {
-    cmd /c "claude mcp remove --scope user samsung-notes >nul 2>nul"
-    cmd /c "claude mcp add --scope user samsung-notes -- `"$python`" `"$serverPy`""
-    Ok "Claude Code 등록 완료 (새 세션부터 사용 가능)"
+$claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+if ($claudeCmd) {
+    # PowerShell이 인자를 직접 전달 — 경로에 공백/한글이 있어도 안전
+    try { & $claudeCmd.Source mcp remove --scope user samsung-notes *> $null } catch {}
+    & $claudeCmd.Source mcp add --scope user samsung-notes -- $python $serverPy
+    if ($LASTEXITCODE -eq 0) {
+        Ok "Claude Code 등록 완료 (새 세션부터 사용 가능)"
+    } else {
+        Write-Host "  ⚠ Claude Code 등록이 실패했습니다. Claude Code에서 직접 실행해 보세요:" -ForegroundColor Yellow
+        Write-Host "    claude mcp add --scope user samsung-notes -- `"$python`" `"$serverPy`""
+    }
 } else {
     Write-Host "  ℹ Claude Code가 없는 것 같아 건너뜁니다."
 }
