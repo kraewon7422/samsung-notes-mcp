@@ -190,6 +190,63 @@ def _note_images(note_dir: Path) -> list[Path]:
     return sorted(imgs, key=order)
 
 
+def _ordered_page_uuids(con: sqlite3.Connection, document_uuid: str) -> list[str]:
+    """Page UUIDs of a note in true page order.
+
+    PageDB.documentUUID groups a note's pages; the literal `index` column is
+    unused (always 0), but ascending `_id` matches Samsung's own page order
+    file (pageIdInfo.dat), so we order by that. Deleted pages are skipped.
+    """
+    return [
+        row["UUID"]
+        for row in con.execute(
+            'select UUID from PageDB where documentUUID=? and isDeleted=0 order by _id',
+            (document_uuid,),
+        ).fetchall()
+    ]
+
+
+def _page_render_path(note_uuid: str, page_uuid: str) -> Path | None:
+    """The app-rendered image (handwriting included) for a single page, if cached.
+
+    Samsung Notes renders each page a user opens/scrolls in the Windows app to
+    Thumbnail\\<note-uuid>\\<n>\\<page-uuid>.jpeg (the <n> sub-tier is '0' in
+    practice; we glob it for safety). Pages never viewed on this PC have no such
+    file. When several tiers exist, the largest file is the best-resolution one.
+    """
+    base = _local_state_dir() / "Thumbnail" / note_uuid
+    if not base.is_dir():
+        return None
+    hits = [p for p in base.glob(f"*/{page_uuid}.jpeg") if p.is_file()]
+    hits += [p for p in base.glob(f"{page_uuid}.jpeg") if p.is_file()]
+    if not hits:
+        return None
+    return max(hits, key=lambda p: p.stat().st_size)
+
+
+def _resolve_page_render(con: sqlite3.Connection, r: sqlite3.Row, page: int) -> Path | None:
+    """Path to the rendered handwriting image for 0-based `page`, or None if that
+    page has not been rendered by the app yet. Page 0 falls back to the note's
+    high-res first-page thumbnail. Raises ValueError if `page` is out of range."""
+    pages = _ordered_page_uuids(con, r["UUID"])
+    thumb = r["ThumbnailPath"]
+    if not pages:
+        # Older single-page notes have no PageDB rows; treat as one page.
+        if page == 0 and thumb and Path(thumb).exists():
+            return Path(thumb)
+        if page == 0:
+            return None
+        raise ValueError(f"Note {r['Title']!r} has 1 page (page must be 0).")
+    if not 0 <= page < len(pages):
+        raise ValueError(f"page must be 0..{len(pages) - 1} (note has {len(pages)} pages).")
+    rendered = _page_render_path(r["UUID"], pages[page])
+    if rendered:
+        return rendered
+    if page == 0 and thumb and Path(thumb).exists():
+        return Path(thumb)
+    return None
+
+
 def _note_pdfs(note_dir: Path) -> list[Path]:
     """Original PDF files imported into a note (stored under media/)."""
     if not note_dir.is_dir():
@@ -335,11 +392,12 @@ def samsung_notes_read_note(note_id: str) -> str:
         }
         if r["IsLocked"]:
             result["locked"] = True
-        if images:
-            result["hint"] = (
-                "Use samsung_notes_get_page_image(note_id, page) to view page images "
-                "(0-based), or samsung_notes_list_note_images for file paths."
-            )
+        result["hint"] = (
+            "For handwritten pages use samsung_notes_list_pages / "
+            "samsung_notes_get_page (rendered WITH pen strokes, all pages). "
+            "samsung_notes_get_page_image / samsung_notes_list_note_images return "
+            "only imported PDF/photo backgrounds without strokes."
+        )
         return _json(result)
     finally:
         con.close()
@@ -411,8 +469,8 @@ def samsung_notes_list_note_images(note_id: str) -> str:
                 ],
                 "imported_pdfs": [str(p) for p in pdfs],
                 "note": "These are imported PDF/photo backgrounds; pen strokes are not "
-                        "rendered into them. The first-page render incl. handwriting is "
-                        "available via samsung_notes_get_thumbnail.",
+                        "rendered into them. For handwritten pages (all pages, with "
+                        "strokes) use samsung_notes_list_pages / samsung_notes_get_page.",
             }
         )
     finally:
@@ -461,6 +519,96 @@ def samsung_notes_get_thumbnail(note_id: str, max_width: int = 1024) -> Image:
     return _scaled_jpeg(Path(path), max(64, min(max_width, 2048)))
 
 
+@mcp.tool(annotations={"readOnlyHint": True})
+def samsung_notes_list_pages(note_id: str) -> str:
+    """List a note's pages in order and whether each one's handwriting image is
+    available right now.
+
+    Unlike the imported backgrounds from samsung_notes_list_note_images, these
+    are the app's per-page renders WITH your pen strokes. The catch: Samsung
+    Notes only creates a page's render after you open that note and scroll past
+    the page in the Samsung Notes Windows app. Pages you have never viewed on
+    this PC show available=false until you do.
+
+    Use samsung_notes_get_page(note_id, page) to fetch an available page.
+
+    Args:
+        note_id: note UUID or a unique title substring
+    """
+    con = _connect()
+    try:
+        r = _resolve_note(con, note_id)
+        names = _folder_names(con)
+        page_uuids = _ordered_page_uuids(con, r["UUID"])
+        if not page_uuids:
+            # Single-page note with no PageDB rows: the first-page thumbnail is it.
+            has_thumb = bool(r["ThumbnailPath"] and Path(r["ThumbnailPath"]).exists())
+            pages = [{"page": 0, "available": has_thumb}]
+        else:
+            pages = [
+                {"page": i, "available": _page_render_path(r["UUID"], pu) is not None}
+                for i, pu in enumerate(page_uuids)
+            ]
+            # Page 0 always falls back to the high-res first-page thumbnail.
+            if pages and not pages[0]["available"] and r["ThumbnailPath"] and Path(r["ThumbnailPath"]).exists():
+                pages[0]["available"] = True
+        available = sum(p["available"] for p in pages)
+        result = {
+            "id": r["UUID"],
+            "title": _clean(r["Title"]) or "(untitled)",
+            "folder": names.get(r["CategoryUUID"], ""),
+            "page_count": len(pages),
+            "handwriting_images_available": available,
+            "pages": pages,
+        }
+        if available < len(pages):
+            result["hint"] = (
+                f"{len(pages) - available} page(s) are not rendered yet. Open this "
+                "note in Samsung Notes on Windows and scroll through every page "
+                "once, then they become available. Then use "
+                "samsung_notes_get_page(note_id, page)."
+            )
+        else:
+            result["hint"] = "Use samsung_notes_get_page(note_id, page) to view any page."
+        return _json(result)
+    finally:
+        con.close()
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def samsung_notes_get_page(note_id: str, page: int = 0, max_width: int = 1024) -> Image:
+    """Return one page of a note as rendered by the app, INCLUDING handwriting /
+    pen strokes — the way to read handwritten pages beyond the first.
+
+    Page order matches samsung_notes_list_pages. A page is only available after
+    it has been opened/scrolled in the Samsung Notes Windows app; if it has not
+    been rendered yet this raises an error telling you to do that. Page 0 falls
+    back to the note's first-page thumbnail.
+
+    Note: these per-page renders are modest resolution (~286 px wide) — that is
+    all Samsung caches — so max_width only downscales, never upscales.
+
+    Args:
+        note_id: note UUID or a unique title substring
+        page: 0-based page index (see samsung_notes_list_pages)
+        max_width: downscale to this width in px (default 1024)
+    """
+    con = _connect()
+    try:
+        r = _resolve_note(con, note_id)
+        path = _resolve_page_render(con, r, page)
+    finally:
+        con.close()
+    if path is None:
+        raise ValueError(
+            f"Page {page} of {r['Title']!r} has not been rendered yet. Open this "
+            "note in Samsung Notes on Windows and scroll through to that page "
+            "once, then try again. (samsung_notes_list_pages shows which pages "
+            "are ready.)"
+        )
+    return _scaled_jpeg(path, max(64, min(max_width, 2048)))
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -502,26 +650,57 @@ if __name__ == "__main__":
         # Allow requests arriving via the Tailscale Funnel hostname
         # (the SDK's DNS-rebinding protection otherwise rejects them, 421).
         import subprocess
+        import time
 
         from mcp.server.transport_security import TransportSecuritySettings
 
+        # Allow requests arriving via this PC's Tailscale Funnel hostname; the
+        # SDK's DNS-rebinding protection otherwise rejects them with 421. The
+        # hostname is discovered from `tailscale status` below, with retries for
+        # a Tailscale that is slow to start at logon. If you still hit a
+        # persistent 421 (Tailscale never ready in time), hardcode your own
+        # Funnel host here too, e.g.:
+        #   allowed = ["127.0.0.1:*", "localhost:*",
+        #              "myhost.tailXXXX.ts.net", "myhost.tailXXXX.ts.net:*"]
         allowed = ["127.0.0.1:*", "localhost:*"]
         tailscale = r"C:\Program Files\Tailscale\tailscale.exe"
         if not Path(tailscale).exists():
             tailscale = shutil.which("tailscale") or tailscale
-        try:
-            status = json.loads(
-                subprocess.run(
-                    [tailscale, "status", "--json"],
-                    capture_output=True, timeout=15,
-                    # explicit utf-8: Korean Windows would otherwise decode as cp949
-                    encoding="utf-8", errors="replace",
-                ).stdout
+        # The scheduled task starts at logon, often before Tailscale is ready, so
+        # `status --json` returns no DNSName, the Funnel hostname never gets added
+        # to allowed_hosts, and every remote request is rejected with 421 until a
+        # manual restart. Retry for ~30s until the name appears instead of giving
+        # up on the first attempt.
+        dns_name = None
+        for attempt in range(10):
+            try:
+                status = json.loads(
+                    subprocess.run(
+                        [tailscale, "status", "--json"],
+                        capture_output=True, timeout=15,
+                        # explicit utf-8: Korean Windows would otherwise decode as cp949
+                        encoding="utf-8", errors="replace",
+                    ).stdout
+                )
+                dns_name = (status.get("Self") or {}).get("DNSName", "").rstrip(".")
+            except Exception as e:
+                print(f"warning: Tailscale status failed ({e})", file=sys.stderr, flush=True)
+                dns_name = None
+            if dns_name:
+                allowed += [dns_name, f"{dns_name}:*"]
+                print(f"Tailscale DNS name allowed: {dns_name}", file=sys.stderr, flush=True)
+                break
+            print(
+                f"Tailscale not ready (attempt {attempt + 1}/10); retrying in 3s...",
+                file=sys.stderr, flush=True,
             )
-            dns_name = status["Self"]["DNSName"].rstrip(".")
-            allowed += [dns_name, f"{dns_name}:*"]
-        except Exception as e:
-            print(f"warning: could not get Tailscale DNS name ({e})", file=sys.stderr)
+            time.sleep(3)
+        else:
+            print(
+                "warning: gave up waiting for Tailscale DNS name; remote Funnel "
+                "access will be rejected (421) until the task is restarted",
+                file=sys.stderr, flush=True,
+            )
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True, allowed_hosts=allowed
         )

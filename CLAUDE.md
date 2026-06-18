@@ -23,7 +23,7 @@ Galaxy Tab/phone → Samsung Cloud → Samsung Notes Windows app
 ## Moving parts (where to look when debugging)
 | Part | Location |
 |---|---|
-| Server | `server.py` here; 8 tools, all read-only |
+| Server | `server.py` here; 10 tools, all read-only |
 | Secret URL token | `http_secret.txt` here (gitignored; rotate = delete + restart task + re-add connector) |
 | HTTP server log | `server.log` here (only written in --http mode under pythonw) |
 | Auto-start | Windows Scheduled Task `SamsungNotesMCP` (runs `pythonw server.py --http` at logon) |
@@ -57,10 +57,16 @@ python -c "import server; print(server.samsung_notes_recent(3))"
   `encoding="utf-8"`, or it crashes/returns None on non-ASCII output.
 - **pythonw trap**: `sys.stdout/stderr` are `None` under the scheduled task;
   server redirects them to `server.log` in --http mode. Don't add bare prints.
-- **Handwriting**: pen strokes live in undocumented `.page` files; only visible
-  via the app-rendered first-page thumbnail (`samsung_notes_get_thumbnail`).
-  Page JPGs (`wdoc\<uuid>\` or `media\` subfolder; `N@` prefix = page order)
-  are imported PDF/photo backgrounds without strokes.
+- **Handwriting**: pen strokes live in undocumented `.page`/`note.note` binaries.
+  The app renders each page (with strokes) only when opened/scrolled in the
+  Windows app, caching it at `Thumbnail\<note-uuid>\<n>\<page-uuid>.jpeg` (`<n>`=0
+  in practice). `samsung_notes_list_pages` / `samsung_notes_get_page` read that
+  cache; page order = `PageDB` rows for the note ordered by `_id` (the `index`
+  column is unused/0, but `_id` order matches Samsung's `pageIdInfo.dat`).
+  Coverage is partial — only viewed pages are cached; page 0 falls back to the
+  first-page thumbnail (`samsung_notes_get_thumbnail`). Page JPGs (`wdoc\<uuid>\`
+  or `media\` subfolder; `N@` prefix = page order) are imported PDF/photo
+  backgrounds WITHOUT strokes (`samsung_notes_get_page_image`).
 - **Locked notes** are listed but content is encrypted; **freshness** depends on
   the Samsung Notes Windows app having synced (open the app to force it).
 
@@ -70,6 +76,15 @@ python -c "import server; print(server.samsung_notes_recent(3))"
 3. 421 on public URL → funnel hostname changed (re-check `tailscale status --json` DNSName)
 4. Everything broken after Samsung Notes app update → package folder name or DB
    schema changed; re-verify the glob and table columns (NoteDB, CategoryTreeDB, TextSearchDB)
+
+## Publishing updates to GitHub (https://github.com/kraewon7422/samsung-notes-mcp)
+This local repo's history contains personal info (old docs with the owner's
+hostname/paths, work email in commit authors) — **never push it directly.**
+To publish an update: copy the 7 distributable files (server.py, README.md,
+MANUAL.md, CLAUDE.md, .gitignore, setup.ps1, 설치하기.bat) to a temp dir,
+clone/pull the GitHub repo there, commit as
+`kraewon7422 <kraewon7422@users.noreply.github.com>`, push to `main`
+(auth: `gh` CLI, already logged in). Never copy `http_secret.txt`/`server.log`.
 
 ## Don'ts
 - Never write to Storage.sqlite or anything under the Samsung Notes package folder

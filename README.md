@@ -39,8 +39,9 @@ Claude(클로드)가 **내 삼성 노트를 직접 읽을 수 있게** 해주는
 | 노트 목록 | "수학 폴더에 뭐 있어?" |
 | 검색 | "삼성 노트에서 한국사 검색해줘" |
 | 노트 읽기 | "○○ 노트 내용 읽어줘" |
-| 손글씨 보기 | "○○ 노트 첫 페이지 보여줘" |
-| 채점 받기 | "이 노트 첫 페이지 보고 내 풀이 채점해줘" |
+| 손글씨 보기 (첫 페이지) | "○○ 노트 첫 페이지 보여줘" |
+| 손글씨 보기 (모든 페이지) | "○○ 노트 3페이지 보여줘" / "페이지 목록 보여줘" |
+| 채점 받기 | "이 노트 5페이지 보고 내 풀이 채점해줘" |
 | 요약 | "○○ 노트 요약해줘" |
 
 ## 문제 해결
@@ -62,8 +63,9 @@ Claude(클로드)가 **내 삼성 노트를 직접 읽을 수 있게** 해주는
 
 ## 한계
 
-- **손글씨**는 텍스트로 변환되지 않습니다. 대신 "첫 페이지 보여줘"로 손글씨가 그려진 화면을 Claude가 직접 봅니다.
+- **손글씨**는 텍스트로 변환되지 않습니다. 대신 손글씨가 그려진 화면을 Claude가 이미지로 직접 봅니다.
   (PDF 위에 필기한 노트는 PDF의 텍스트는 추출됩니다)
+- **첫 페이지 이후의 손글씨 페이지**도 볼 수 있습니다. 단, 삼성 노트 앱은 **PC에서 한 번 열어 그 페이지까지 넘겨 본** 페이지만 이미지로 저장합니다. 아직 안 본 페이지는 "페이지 목록 보여줘"에서 *아직 준비 안 됨*으로 표시되며, PC 앱에서 그 노트를 열어 끝까지 넘기면 볼 수 있게 됩니다. (저장되는 이미지 해상도는 가로 약 286px로 다소 낮습니다)
 - PC 삼성 노트 앱이 마지막으로 동기화한 시점까지의 노트가 보입니다.
 
 ---
@@ -97,9 +99,14 @@ tailscale funnel --bg 8788
 - Single-file MCP server (`server.py`, Python, FastMCP) over the Samsung Notes
   for Windows local database: `%LOCALAPPDATA%\Packages\SAMSUNGELECTRONICSCoLtd.SamsungNotes_*\LocalState`
   (`Storage.sqlite` for metadata/text, `wdoc\<uuid>\` for page images/PDFs).
-- 8 read-only tools: list folders/notes/recent, read note (typed + PDF + textbox text),
-  keyword search, list page images, get page image (downscaled), get rendered
-  first-page thumbnail (includes pen strokes).
+- 10 read-only tools: list folders/notes/recent, read note (typed + PDF + textbox text),
+  keyword search, list page images, get page image (imported PDF/photo backgrounds,
+  downscaled), get rendered first-page thumbnail (includes pen strokes), plus
+  `list_pages` / `get_page` to view **any** page rendered with handwriting.
+- Handwritten pages beyond the first come from the app's own per-page render cache
+  (`Thumbnail\<note-uuid>\<n>\<page-uuid>.jpeg`), ordered via `PageDB`. Samsung only
+  writes a page's render after it is opened/scrolled in the Windows app, so
+  `get_page` reports which pages are not yet rendered instead of guessing.
 - The live DB is snapshot-copied to `%TEMP%` before every read — the Samsung
   Notes app never sees a lock, and nothing is ever written to its data.
 - Optional `--http` mode serves streamable HTTP on `127.0.0.1:8788` with a
