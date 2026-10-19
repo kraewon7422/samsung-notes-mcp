@@ -11,10 +11,11 @@ Strictly read-only: Storage.sqlite is snapshotted to a temp copy before
 every read, so the live database is never opened or locked, and note
 files are never modified.
 
-Known limitation: page images in the wdoc folders are the imported PDF /
-photo backgrounds. Your own pen strokes are stored separately in a binary
-format and only appear rendered in the note's first-page thumbnail
-(samsung_notes_get_thumbnail).
+Handwriting: pen strokes are stored in an undocumented binary format.
+samsung_notes_get_page redraws them with the sdocx renderer in render/
+(Node.js, run as a separate process); without Node it falls back to the
+app's own low-res page cache. Page images in the wdoc folders are only the
+imported PDF / photo backgrounds, without strokes.
 """
 
 import json

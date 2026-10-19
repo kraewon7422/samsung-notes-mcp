@@ -1,14 +1,13 @@
 # CLAUDE.md — Samsung Notes MCP Server
 
 ## Project overview
-- One line: read-only MCP server that lets Claude read the user's Samsung Notes
-  (text, page images, handwriting thumbnails) from the local Samsung Notes for
-  Windows database. Built 2026-06-08 with Claude Code; owners are typically
-  non-developers — explain things click-by-click and run commands for them.
-- Language/runtime: Python 3.14, single file `server.py` (deps: `mcp[cli]<2`, `pillow`, `av`, `pymupdf`; optional node + `render/`,
+- One line: read-only MCP server that lets Claude read Samsung Notes (typed text,
+  PDFs, handwritten pages, voice-recording metadata) from the local Samsung Notes
+  for Windows database. Many users are not developers — when helping one, explain
+  things step by step and run commands for them.
+- Language/runtime: Python 3.10+, single file `server.py` (deps: `mcp[cli]<2`, `pillow`, `av`, `pymupdf`; optional node + `render/`,
   installed into `.venv` by `setup.ps1` — mcp 2.x renamed FastMCP and breaks the import)
-- Docs: `README.md` (English; user guide + technical notes). Installer: `install.bat` → `setup.ps1`
-- English port of https://github.com/kraewon7422/samsung-notes-mcp (MIT)
+- Docs: `README.md` (user guide + technical notes). Installer: `install.bat` → `setup.ps1`
 
 ## Architecture
 ```
@@ -28,7 +27,7 @@ Galaxy Tab/phone → Samsung Cloud → Samsung Notes Windows app
 | Server | `server.py` here; 11 tools, all read-only |
 | Secret URL token | `http_secret.txt` here (gitignored; rotate = delete + restart task + re-add connector) |
 | HTTP server log | `server.log` here (only written in --http mode under pythonw) |
-| Auto-start | Windows Scheduled Task `SamsungNotesMCP` (runs `pythonw server.py --http` at logon) |
+| Auto-start (optional, remote setups only) | e.g. a Scheduled Task running `pythonw server.py --http` at logon (`SamsungNotesMCP` in the commands below) |
 | Tunnel | `& "C:\Program Files\Tailscale\tailscale.exe" funnel status` (`--bg 8788`, persists) |
 | Claude Code registration | `claude mcp list` → `samsung-notes` (user scope, stdio) |
 | Claude Desktop registration | `%APPDATA%\Claude\claude_desktop_config.json` → `mcpServers.samsung-notes` |
